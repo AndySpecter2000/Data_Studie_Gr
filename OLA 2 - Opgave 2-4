@@ -1,0 +1,808 @@
+#################################################################################################
+###Opgave 2 - Forbrugertillidsindikatorer og fremtidig vækst i husholdningernes forbrugsudgift###
+#################################################################################################
+
+#################
+###Opgave 2.1 ###
+#################
+
+#Opdatér DI’s forbrugertillidsindikator med data frem til og med 2023 fra artiklen ”Forbruget
+#fortsætter fremgangen i 2016” (Baum, 2016). Lav vurdering af om forbrugertillidsindikatoren fra DI
+#fortsat er bedre end forbrugertillidsindikatoren fra DST. (Hint: I bliver nødt til at nærlæse bilaget for
+#DI-FTI for at finde starttidspunktet for estimationen, spørgsmålene, samt tabel, der sammenlignerFTI og DI-FTI)
+
+############################
+###FUNKTIONER TIL DST API###
+############################
+
+#dst_search() This function makes it possible to search through the different tables for a word or a phrase.
+#dst_tables() This function downloads all the possible tables available.
+#dst_meta() This function lets you download the meta data for a specific table, so you can see the description, unit, variables and values you can download data for.
+#dst_get_data() lets you download the actual data you wan't.
+
+#####################
+####Indlæs Pakker####
+#####################
+
+library("dkstat")
+library("tidyr")
+library("dplyr")
+library("ggplot2")
+library("corrplot")
+library("gridExtra")
+library("pROC")
+
+##############################
+####Forbrugerforventninger####
+##############################
+
+dst_search(string = "Forbrugerforventning", field = "text")
+
+Tabeller <- (dst_get_tables(lang = "da"))
+
+FORV <- dst_meta(table = "FORV1",lang = "da")
+
+FORV_filter <- list(INDIKATOR ="*",
+                 Tid = "*")
+
+FORV1 <- dst_get_data(table = "FORV1", query = FORV_filter, lang = "da")
+
+FORV1$TID <- as.factor(FORV1$TID)
+
+Forventning <- reshape(FORV1, idvar = "TID", timevar = "INDIKATOR", direction = "wide")
+
+colnames(Forventning) <- gsub("value.", "", colnames(Forventning))
+
+Forventning$DST <- round(rowMeans(Forventning[c("Familiens økonomiske situation i dag, sammenlignet med for et år siden",
+                                                        "Familiens økonomiske  situation om et år, sammenlignet med i dag",
+                                                        "Danmarks økonomiske situation i dag, sammenlignet med for et år siden",
+                                                        "Danmarks økonomiske situation om et år, sammenlignet med i dag",
+                                                        "Anskaffelse af større forbrugsgoder, fordelagtigt for øjeblikket")]),1)
+
+Forventning$DI <- round(rowMeans(Forventning[c("Familiens økonomiske situation i dag, sammenlignet med for et år siden",
+                                                       "Danmarks økonomiske situation i dag, sammenlignet med for et år siden",
+                                                       "Anskaffelse af større forbrugsgoder, fordelagtigt for øjeblikket",
+                                                       "Anskaffelse af større forbrugsgoder, inden for de næste 12 mdr.")]),1)
+
+n_kategorier <- ncol(Forventning)
+n_rows <- nrow(Forventning)
+n_groups <- ceiling(n_rows / 3)
+Forventning_matrix <- matrix(nrow = n_groups, ncol = n_kategorier)
+colnames(Forventning_matrix) <- colnames(Forventning)
+
+for (var in seq_len(n_kategorier)) {
+  for (i in seq(1, n_rows, by = 3)) {
+    end <- min(i + 2, n_rows)  # Sørg for ikke at gå udenfor rækkerne
+    Forventning_matrix[ceiling(i / 3), var] <- round(mean(Forventning[i:end, var], na.rm = TRUE), 2)
+  }
+}
+
+Forventning <- as.data.frame(Forventning_matrix)
+
+Kvartal_start <- as.Date("1974-10-01")
+Kvartal_slut <- as.Date("2024-09-01")
+
+Kvartal_dato <- seq.Date(from = Kvartal_start, to = Kvartal_slut, by = "quarter")
+
+Formater_kvartaler <- function(date) {
+  year <- format(date, "%Y")
+  month <- as.integer(format(date, "%m")) 
+  quarter <- (month - 1) %/% 3 + 1
+  return(paste0(year, "Q", quarter))
+}
+
+Kvartaler <- sapply(Kvartal_dato, Formater_kvartaler)
+
+Forventning$Kvartal <- Kvartaler
+
+Forbrugertillid <- Forventning[-c(1:101,200),c(15:16)]
+
+rownames(Forbrugertillid) <- NULL
+
+#####################
+####Privatforbrug####
+#####################
+
+FORB <- dst_meta(table = "NKHC1",lang = "da")
+
+FORB_filter <- list(FORBRUGSART = "Privatforbrug",
+                    PRISENHED = "2020-priser, kædede værdier",
+                    SÆSON = "Sæsonkorrigeret",
+                    Tid = "*")
+
+Forbrug <- dst_get_data(table = "NKHC1", query = FORB_filter, lang = "da")
+
+Forbrug <- Forbrug[-c(1:4),-c(1:3)]
+
+rownames(Forbrug) <- NULL
+
+Kategori_Forbrug <- c("Kvartal","Forbrug")
+
+colnames(Forbrug) <- Kategori_Forbrug
+
+Forbrug$Realvaekst <- round(c(rep(0, 4), 
+                                      (Forbrug$Forbrug[5:length(Forbrug$Forbrug)] / 
+                                         Forbrug$Forbrug[1:(length(Forbrug$Forbrug) - 4)] - 1) * 100), 2)
+
+Forbrug1 <- Forbrug[-c(1:36),-2]
+
+rownames(Forbrug1) <- NULL
+
+#####################################
+####Privatforbrug & Forventninger####
+#####################################
+
+Forbrug_endelig <- cbind(Forbrug1, Forbrugertillid)
+
+ggplot(Forbrug_endelig, aes(x = Kvartal)) +
+  geom_bar(aes(y = Realvaekst, fill = "Realvaekst"), stat = "identity", position = "dodge") +  # Søjler for Realvaekst
+  geom_line(aes(y = DST, color = "DST"), linewidth = 1) +          # Plot DST som linje
+  geom_line(aes(y = DI, color = "DI"), linewidth = 1) +            # Plot DI som linje
+  geom_point(aes(y = DST, color = "DST"), size = 3, shape = 16) +
+  geom_point(aes(y = DI, color = "DI"), size = 3, shape = 16) +
+  scale_y_continuous(
+    name = "Forbrugertillidsindikator (Nettotal)",                  # Label for venstre y-akse
+    breaks = seq(-40, 40, by = 10),                 # Definerer værdier på venstre y-akse med intervaller på 10
+    sec.axis = sec_axis(~ ., breaks = seq(-10, 12, by = 2), name = "Realvækst (pct.)")  # Label for højre y-akse med samme breaks
+  ) +
+  scale_x_date(
+    date_breaks = "1 year",    # Angiver, at der skal være en tick for hvert år
+    date_labels = "%Y"         # Viser kun årstal
+  ) +
+  scale_fill_manual(values = c("Realvaekst" = "red")) +  # Definerer farven for Realvaekst
+  scale_color_manual(values = c("DST" = "blue", "DI" = "green")) +  # Farve til linjer
+  labs(
+    title = "DI FTI følger tættere realvæksten end DST FTI",  # Tilføjer en overskrift
+    x = "Kvartal", 
+    fill = "Privatforbrug",    # Legende titel for fill (Realvaekst)
+    color = "Forbrugertillidsindikator"  # Legende titel for linjer
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.y.right = element_text(color = "black"),  # Tilpas højre y-akse titel
+    legend.position = "bottom",  # Flytter legenden til bunden
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )
+
+
+##########################
+####Korrelationsmatrix####
+##########################
+
+Forbrug_corr <- Forbrug_endelig[,-1]
+
+Forbrug_corr <- cor(Forbrug_corr)
+
+corrplot(Forbrug_corr, method = "number",
+         tl.cex = 0.8,               
+         col = "black",              
+         addgrid.col = "black",      
+         is.corr = TRUE)              
+
+##########################
+####Lineære regression####
+##########################
+
+#1) Realvaekst vs DST
+ForbrugRegSimple <- lm(Realvaekst ~ `DST`, data = Forbrug_endelig)
+
+ggplot(ForbrugRegSimple, aes(x = `DST`, y = Realvaekst)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Realvaekst vs. DST",
+       x = "DST",
+       y = "Realvaekst")
+
+#2) Realvaekst vs DI
+ForbrugRegSimple2 <- lm(Realvaekst ~ `DI`, data = Forbrug_endelig)
+
+ggplot(ForbrugRegSimple2, aes(x = `DI`, y = Realvaekst)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Realvaekst vs. DI",
+       x = "DI",
+       y = "Realvaekst")
+
+#################
+###Opgave 2.2 ###
+#################
+
+#Beregn/forudsig den årlige realvækst i husholdningernes forbrugsudgift for 3. kvartal 2024 med
+#henholdsvis DI’s forbrugertillidsindikator og forbrugertillidsindikatoren fra DST.
+
+##############################
+####Forudsigelse af 2024Q3####
+##############################
+
+# Formel for at beregne/forudse y (afhængig variabel) y =𝐵0 +𝐵1⋅𝑋1
+# I vores tilfælde er y realvæksten.Lad et summary af den lineære regression for at finde de nødvendige værdier
+#𝐵0 er estimated Intercept af y variablen i summary - Teoretisk betyder det Skæringspunktet (intercept), som er værdien af y når X1 er 0.
+#𝐵1 er estimated af den uafhængige variabel (x) Teoretisk betyder det hældningen (slope), som angiver, hvordan y ændrer sig med en ændring i X1
+#𝑋1 Den uafhængige variabel, som påvirker y. I denne opgave er X1 (den uafhængige variabel) DI og DST forbrugertillidsindikator
+
+## Forudsigelse af realvæksten for 3. kvartal 2024
+
+# DST (manuel beregning): y = B0 + B1 * X1 eller 0.1934 = 1.353 + 0.177 * (-6.53)
+DST_2024Q3 <- 1.35387+0.17770*(-6.53)
+
+# Med predict()
+FTI2024Q3_DST <- data.frame(DST = -6.53)
+Predict_DST <- predict(ForbrugRegSimple, newdata = FTI2024Q3_DST)
+
+# DI manuel beregning): y = B0 + B1 * X1 eller 0.7199 = 2.197 + 0.180 * (-8.17) 
+DI_2024Q3 <- 2.19704+0.18080*(-8.17)
+
+# Med predict()
+FTI2024Q3_DI <- data.frame(DI = -8.17)
+Predict_DI <- predict(ForbrugRegSimple2, newdata = FTI2024Q3_DI)
+
+########################################################################################
+###Opgave 3 – Logistik regression, husholdningernes forbrugsudgift og forbrugertillid###
+########################################################################################
+
+################
+###Opgave 3.1###
+################
+
+Forbrugertillid2 <- Forventning[-c(1:93,200),c(3:14,16)]
+
+Forbrug2 <- Forbrug[-c(1:28),-2]
+
+Forbrug_logi <- cbind(Forbrugertillid2,Forbrug2)
+
+rownames(Forbrug_logi) <- NULL
+
+Forbrug_logi$Realretning <- ifelse(Forbrug_logi$Realvaekst >= 0, "Op", "Ned")
+
+table(Forbrug_logi$Realretning)
+
+## Svar: 24 ned og 82 op
+# >= betyder større eller lig 0. Altså nul er medtaget som værende en stigning ("Op")
+
+# Lav diagrammer for "Op" og "Ned" underspørgsmålene i Forbrugerforventningsundersøgelse.
+
+Forbrug_logi$Realretning <- as.factor(Forbrug_logi$Realretning)
+
+Realvaekst_Op <- subset(Forbrug_logi, Realretning == "Op")
+Realvaekst_Ned <- subset(Forbrug_logi, Realretning == "Ned")
+
+Mean_Op <- colMeans(Realvaekst_Op[, sapply(Realvaekst_Op, is.numeric)])
+
+Mean_Ned <- colMeans(Realvaekst_Ned[, sapply(Realvaekst_Ned, is.numeric)])
+
+Mean_combined <- rbind(Op = Mean_Op, Ned = Mean_Ned)
+
+Mean_combined <- as.data.frame(Mean_combined)
+
+Mean_combined$Kategori <- rownames(Mean_combined)
+
+Mean_combined <- Mean_combined[,-13]
+
+Mean_long <- pivot_longer(Mean_combined, 
+                                cols = -Kategori, 
+                                names_to = "Variabel", 
+                                values_to = "Gennemsnit")
+
+ggplot(Mean_long, aes(x = Kategori, y = Gennemsnit, fill = Kategori)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Gennemsnit for spørgsmålene i FTI (Op vs Ned)", 
+       x = "Realretning (Op/Ned)", 
+       y = "Gennemsnit") +
+  facet_wrap(~ Variabel, scales = "free_y") +  # Særskilte diagrammer for hver variabel
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+################
+###Opgave 3.2###
+################
+
+# OBS! Husk at omdanne dummy variabel til en factor, før der laves en logistisk variabel
+
+ForbrugGlm <- glm(Realretning ~ `Familiens økonomiske situation i dag, sammenlignet med for et år siden` + 
+                 `Danmarks økonomiske situation i dag, sammenlignet med for et år siden` + 
+                 `Anskaffelse af større forbrugsgoder, fordelagtigt for øjeblikket` + 
+                 `Anskaffelse af større forbrugsgoder, inden for de næste 12 mdr.`,
+               data = Forbrug_logi, family = binomial)
+
+# Lav summary af glm(), find tjek signifikansniveauet af x variabler. De insignifikante variabler fjernes og ny glm().
+# Laves med de signifikante variabler. Kør herefter summary igen og repetér processen indtil, at der kan er 
+# Signifikante variabler tilbage.
+
+summary(ForbrugGlm)
+
+ForbrugGlm2 <- glm(Realretning ~ `Danmarks økonomiske situation i dag, sammenlignet med for et år siden` + 
+                  `Anskaffelse af større forbrugsgoder, inden for de næste 12 mdr.`,
+                data = Forbrug_logi, family = binomial)
+
+summary(ForbrugGlm2)
+
+ForbrugGlm3 <- glm(Realretning ~ `Danmarks økonomiske situation i dag, sammenlignet med for et år siden`,
+                    data = Forbrug_logi, family = binomial)
+
+summary(ForbrugGlm3)
+
+Forbrug_corrGlm <- Forbrug_logi[,c(1,3,5,9)]
+
+Kategori_corrGlm <- c("Fam","DK","AnskafNu","Anskaf12")
+
+colnames(Forbrug_corrGlm) <- Kategori_corrGlm
+
+Forbrug_corrGlm <- cor(Forbrug_corrGlm)
+
+corrplot(Forbrug_corrGlm, method = "number",
+         tl.cex = 1.0,               
+         col = "black",              
+         addgrid.col = "black",      
+         is.corr = TRUE)
+
+ForbrugGlm_Forudsigelse <- predict(ForbrugGlm3 ,type="response")
+
+GLM2024Q3_DK <- data.frame("Danmarks økonomiske situation i dag, sammenlignet med for et år siden" = -7.30)
+colnames(GLM2024Q3_DK) <- "Danmarks økonomiske situation i dag, sammenlignet med for et år siden"
+Predict_DK <- predict(ForbrugGlm3, newdata = GLM2024Q3_DK, type = "response")
+
+DK_2024Q3 <- 1 / (1 + exp(-(1.84727 + 0.07198 * (-7.30))))
+
+
+## Svar: Der er 78,94 % sandsynlighed for at forbruget går op (stiger) i 2024Q3
+
+################
+###Opgave 3.3###
+################
+
+## Konfusion matrix vha. funktion
+# Først binariser forudsigelser baseret på 50 % threshold
+# ForbrugGlm_Forudsigelse er forudsigelserne beregnet i opgave 3.2, se ovenfor.
+
+Threshold <- 0.5 # grænseværdi på 50 % for forudsigelsen
+
+ForbrugGlm_ForudsigelseBin <- ifelse(ForbrugGlm_Forudsigelse > Threshold, "Op", "Ned")
+
+Konfusion_matrix <- table(Predicted = ForbrugGlm_ForudsigelseBin, Actual = Forbrug_logi$Realretning)
+
+print(Konfusion_matrix)
+
+## Konfusion matrix manuel udarbejdet
+
+Forbrug_logi$Predicted <- ifelse(ForbrugGlm_Forudsigelse > 0.5, "Op", "Ned")
+
+True_positive <- sum(Forbrug_logi$Predicted == "Op" & Forbrug_logi$Realretning == "Op")
+True_negative <- sum(Forbrug_logi$Predicted == "Ned" & Forbrug_logi$Realretning == "Ned")
+False_positive <- sum(Forbrug_logi$Predicted == "Op" & Forbrug_logi$Realretning == "Ned")
+False_negative <- sum(Forbrug_logi$Predicted == "Ned" & Forbrug_logi$Realretning == "Op")
+
+Konfusion_matrix2 <- matrix(c(False_positive, False_negative, True_negative, True_positive),
+                            nrow = 2, byrow = TRUE,
+                            dimnames = list(Predicted = c('Ned', 'Op'),
+                                            Actual = c('Ned', 'Op')))
+print(Konfusion_matrix2)
+
+ROC_kurve <- roc(Forbrug_logi$Realretning, ForbrugGlm_Forudsigelse,
+                 levels = c("Ned", "Op"), direction = "<")
+
+plot(ROC_kurve, col = "blue", lwd = 2)
+
+
+################
+###Opgave 3.4###
+################
+
+## Scenarie 1 - Brug anden signifikant x-variabel som udgangspunkt i glm()
+
+ForbrugGlm4 <- glm(Realretning ~ `DI`,
+                   data = Forbrug_logi, family = binomial)
+
+summary(ForbrugGlm4)
+
+ForbrugGlm_Forudsigelse2 <- predict(ForbrugGlm4 ,type="response")
+
+ForbrugGlm_ForudsigelseBin2 <- ifelse(ForbrugGlm_Forudsigelse2 > 0.5, "Op", "Ned")
+
+Konfusion_matrix3 <- table(Predicted = ForbrugGlm_ForudsigelseBin2, Actual = Forbrug_logi$Realretning)
+
+print(Konfusion_matrix3)
+
+ROC_kurve2 <- roc(Forbrug_logi$Realretning, ForbrugGlm_Forudsigelse2,
+                  levels = c("Ned", "Op"), direction = "<")
+
+plot(ROC_kurve2, col = "blue", lwd = 2)
+
+## Scenarie 2 - ændre threshold fra 50 % til 40 % 
+
+Threshold2 <- 0.4 # grænseværdi på 50 % for forudsigelsen
+
+ForbrugGlm_ForudsigelseBin3 <- ifelse(ForbrugGlm_Forudsigelse > Threshold2, "Op", "Ned")
+
+Konfusion_matrix4 <- table(Predicted = ForbrugGlm_ForudsigelseBin3, Actual = Forbrug_logi$Realretning)
+
+print(Konfusion_matrix4)
+
+##########################################################################################
+###Opgave 4 – Forbrug og forbrugertillidsindikatorer fra DST og DI, samt loops i lister###
+##########################################################################################
+
+################
+###Opgave 4.1###
+################
+
+Forbrugertillid3 <- Forventning[-c(1:85),-c(1:14)]
+Forbrugertillid3$Kvartal <- as.Date(paste0(substr(Forbrugertillid3$Kvartal, 1, 4), "-",
+                                           c("01", "04", "07", "10")[as.integer(substr(Forbrugertillid3$Kvartal, 6, 6))], "-01"))
+
+ggplot(Forbrugertillid3, aes(x = Kvartal)) +
+  geom_line(aes(y = DST, color = "DST"), linewidth = 1) + 
+  geom_line(aes(y = DI, color = "DI"), linewidth = 1) + 
+  geom_point(aes(y = DST, color = "DST"), size = 3, shape = 16) +
+  geom_point(aes(y = DI, color = "DI"), size = 3, shape = 16) +
+  scale_y_continuous(
+    name = "Forbrugertillidsindikator (Nettotal)",
+    breaks = seq(-40, 40, by = 10)
+  ) +
+  scale_x_date(
+    date_breaks = "year",
+    date_labels = "%Y"
+  ) +
+  scale_color_manual(values = c("DST" = "blue", "DI" = "green")) +
+  labs(
+    title = "Forbrugertilliden Rammer Historisk Lavpunkt i Fjerde Kvartal af 2022",
+    x = "Kvartal", 
+    color = "Forbrugertillidsindikator"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )
+
+################
+###Opgave 4.2###
+################
+
+#Beregn gennemsnittet for underspørgsmålet ”Set i lyset af den økonomiske situation, mener du, at
+#det for øjeblikket er fordelagtigt at anskaffe større forbrugsgoder som fjernsyn, vaskemaskine eller
+#lignende, eller er det bedre at vente?” for perioden 1. kvartal 2000 til og med 3. kvartal 2024.
+#Vurdér jeres resultat set i forhold til spørgsmålet og svarmulighederne. (Hint: giver resultatet analytisk mening?)
+
+Anskaf <- Forventning[-c(1:101),c(7,17)]
+
+rownames(Anskaf) <- NULL
+
+mean(Anskaf$`Anskaffelse af større forbrugsgoder, fordelagtigt for øjeblikket`)
+
+Anskaf_sd <- sd(Anskaf$`Anskaffelse af større forbrugsgoder, fordelagtigt for øjeblikket`) #sd() beregner standardafvigelsen
+
+################
+###Opgave 4.3###
+################
+
+FORB1 <- dst_meta(table = "NKHC021",lang = "da")
+
+FORB_filter1 <- list(FORMAAAL = "*",
+                    PRISENHED = "2020-priser, kædede værdier",
+                    SÆSON = "Sæsonkorrigeret",
+                    Tid = "*")
+
+Hus_Forb <- dst_get_data(table = "NKHC021", query = FORB_filter1, lang = "da")
+
+Hus_Forb <- Hus_Forb[,-c(2:3)]
+
+Hus_Forb <- reshape(Hus_Forb, idvar = "TID", timevar = "FORMAAAL", direction = "wide")
+
+colnames(Hus_Forb) <- gsub("value.", "", colnames(Hus_Forb))
+
+Hus_Forbrug <- Hus_Forb[c(121:138),-2]
+
+rownames(Hus_Forbrug) <- NULL
+
+# Funktionen grepl("2023", TID) returnerer TRUE for alle rækker, hvor '2023' er en del af værdien i kolonnen TID 
+# (f.eks. '2023-01-01', '2023-04-01', osv.), og FALSE for alle andre.
+
+Hus_Forbrug2023 <- subset(Hus_Forbrug, grepl("2023", TID))
+
+Hus_Forbrug2023 <- round(colMeans(Hus_Forbrug2023[, 2:16]),0)
+
+Hus_Forbrug2023Max <- names(Hus_Forbrug2023)[which.max(Hus_Forbrug2023)]
+Hus_Forbrug2023Value <- max(Hus_Forbrug2023)
+
+cat("Danskerne brugte flest penge på:", Hus_Forbrug2023Max, "med et gennemsnitligt forbrug på", Hus_Forbrug2023Value, "i 2023.")
+
+Hus_Forbrug2 <- round(((Hus_Forbrug[Hus_Forbrug$TID == "2024-04-01", 2:16] - 
+              Hus_Forbrug[Hus_Forbrug$TID == "2020-01-01", 2:16]) /
+             Hus_Forbrug[Hus_Forbrug$TID == "2020-01-01", 2:16]) * 100, 0)
+
+Hus_Forbrug2Max <- names(Hus_Forbrug2)[which.max(Hus_Forbrug2)]
+Hus_Forbrug2Value <- max(Hus_Forbrug2)    
+
+cat("Forbruget steg mest for:", Hus_Forbrug2Max, "med en stigning på", Hus_Forbrug2Value, "% fra første kvartal 2020 til andet kvartal 2024.")
+
+################
+###Opgave 4.4###
+################
+
+Forbrugertillid4 <- Forventning[-c(1:101, 200),c(15:16)]
+
+Hus_Forb1 <- Hus_Forb[-c(1:40),-2]
+
+Hus_Forbrug3 <- cbind(Hus_Forb1, Forbrugertillid4)
+
+rownames(Hus_Forbrug3) <- NULL
+
+HusRegSimple1 <- lm(`Fødevarer mv.` ~ `DST`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple1, aes(x = `DST`, y = `Fødevarer mv.`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Fødevarer vs. DST",
+       x = "DST",
+       y = "Fødevarer mv.")
+
+HusRegSimple2 <- lm(`Drikkevarer og tobak mv.` ~ `DST`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple2, aes(x = `DST`, y = `Drikkevarer og tobak mv.`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Drikkevarer og tobak vs. DST",
+       x = "DST",
+       y = "Drikkevarer og tobak mv.")
+
+HusRegSimple3 <- lm(`Beklædning og fodtøj` ~ `DST`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple3, aes(x = `DST`, y = `Beklædning og fodtøj`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Beklædning og fodtøj vs. DST",
+       x = "DST",
+       y = "Beklædning og fodtøj")
+
+HusRegSimple4 <- lm(`Boligbenyttelse` ~ `DST`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple4, aes(x = `DST`, y = `Boligbenyttelse`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Boligbenyttelse vs. DST",
+       x = "DST",
+       y = "Boligbenyttelse")
+
+HusRegSimple5 <- lm(`Elektricitet, fjernvarme og andet brændsel` ~ `DST`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple5, aes(x = `DST`, y = `Elektricitet, fjernvarme og andet brændsel`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Elektricitet, fjernvarme og andet brændsel vs. DST",
+       x = "DST",
+       y = "Elektricitet, fjernvarme og andet brændsel")
+
+HusRegSimple6 <- lm(`Boligudstyr, husholdningstjenester mv.` ~ `DST`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple6, aes(x = `DST`, y = `Boligudstyr, husholdningstjenester mv.`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Boligudstyr, husholdningstjenester mv. vs. DST",
+       x = "DST",
+       y = "Boligudstyr, husholdningstjenester mv.")
+
+HusRegSimple7 <- lm(`Medicin, lægeudgifter o.l.` ~ `DST`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple7, aes(x = `DST`, y = `Medicin, lægeudgifter o.l.`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Medicin, lægeudgifter o.l. vs. DST",
+       x = "DST",
+       y = "Medicin, lægeudgifter o.l.")
+
+HusRegSimple8 <- lm(`Køb af køretøjer` ~ `DST`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple8, aes(x = `DST`, y = `Køb af køretøjer`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Køb af køretøjer vs. DST",
+       x = "DST",
+       y = "Køb af køretøjer")
+
+HusRegSimple9 <- lm(`Drift af køretøjer og transporttjenester` ~ `DST`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple9, aes(x = `DST`, y = `Drift af køretøjer og transporttjenester`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Drift af køretøjer og transporttjenester vs. DST",
+       x = "DST",
+       y = "Drift af køretøjer og transporttjenester")
+
+HusRegSimple10 <- lm(`Information og kommunikation` ~ `DST`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple10, aes(x = `DST`, y = `Information og kommunikation`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Information og kommunikation vs. DST",
+       x = "DST",
+       y = "Information og kommunikation")
+
+HusRegSimple11 <- lm(`Fritid, sport og kultur` ~ `DST`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple11, aes(x = `DST`, y = `Fritid, sport og kultur`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Fritid, sport og kultur vs. DST",
+       x = "DST",
+       y = "Fritid, sport og kultur")
+
+HusRegSimple12 <- lm(`Undervisning` ~ `DST`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple12, aes(x = `DST`, y = `Undervisning`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Undervisning vs. DST",
+       x = "DST",
+       y = "Undervisning")
+
+HusRegSimple13 <- lm(`Restauranter og hoteller` ~ `DST`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple13, aes(x = `DST`, y = `Restauranter og hoteller`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Restauranter og hoteller vs. DST",
+       x = "DST",
+       y = "Restauranter og hoteller")
+
+HusRegSimple14 <- lm(`Forsikring og finansielle tjenester` ~ `DST`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple14, aes(x = `DST`, y = `Forsikring og finansielle tjenester`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Forsikring og finansielle tjenester vs. DST",
+       x = "DST",
+       y = "Forsikring og finansielle tjenester")
+
+HusRegSimple15 <- lm(`Andre varer og tjenester` ~ `DST`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple15, aes(x = `DST`, y = `Andre varer og tjenester`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Andre varer og tjenester vs. DST",
+       x = "DST",
+       y = "Andre varer og tjenester")
+
+HusRegSimple16 <- lm(`Fødevarer mv.` ~ `DI`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple16, aes(x = `DI`, y = `Fødevarer mv.`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Fødevarer mv. vs. DI",
+       x = "DI",
+       y = "Fødevarer mv.")
+
+HusRegSimple17 <- lm(`Drikkevarer og tobak mv.` ~ `DI`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple17, aes(x = `DI`, y = `Drikkevarer og tobak mv.`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Drikkevarer og tobak mv. vs. DI",
+       x = "DI",
+       y = "Drikkevarer og tobak mv.")
+
+HusRegSimple18 <- lm(`Beklædning og fodtøj` ~ `DI`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple18, aes(x = `DI`, y = `Beklædning og fodtøj`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Beklædning og fodtøj vs. DI",
+       x = "DI",
+       y = "Beklædning og fodtøj")
+
+HusRegSimple19 <- lm(`Boligbenyttelse` ~ `DI`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple19, aes(x = `DI`, y = `Boligbenyttelse`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Boligbenyttelse vs. DI",
+       x = "DI",
+       y = "Boligbenyttelse")
+
+HusRegSimple20 <- lm(`Elektricitet, fjernvarme og andet brændsel` ~ `DI`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple20, aes(x = `DI`, y = `Elektricitet, fjernvarme og andet brændsel`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Elektricitet, fjernvarme og andet brændsel vs. DI",
+       x = "DI",
+       y = "Elektricitet, fjernvarme og andet brændsel")
+
+HusRegSimple21 <- lm(`Boligudstyr, husholdningstjenester mv.` ~ `DI`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple21, aes(x = `DI`, y = `Boligudstyr, husholdningstjenester mv.`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Boligudstyr, husholdningstjenester mv. vs. DI",
+       x = "DI",
+       y = "Boligudstyr, husholdningstjenester mv.")
+
+HusRegSimple22 <- lm(`Medicin, lægeudgifter o.l.` ~ `DI`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple22, aes(x = `DI`, y = `Medicin, lægeudgifter o.l.`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Medicin, lægeudgifter o.l. vs. DI",
+       x = "DI",
+       y = "Medicin, lægeudgifter o.l.")
+
+HusRegSimple23 <- lm(`Køb af køretøjer` ~ `DI`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple23, aes(x = `DI`, y = `Køb af køretøjer`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Køb af køretøjer vs. DI",
+       x = "DI",
+       y = "Køb af køretøjer")
+
+HusRegSimple24 <- lm(`Drift af køretøjer og transporttjenester` ~ `DI`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple24, aes(x = `DI`, y = `Drift af køretøjer og transporttjenester`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Drift af køretøjer og transporttjenester vs. DI",
+       x = "DI",
+       y = "Drift af køretøjer og transporttjenester")
+
+HusRegSimple25 <- lm(`Information og kommunikation` ~ `DI`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple25, aes(x = `DI`, y = `Information og kommunikation`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Information og kommunikation vs. DI",
+       x = "DI",
+       y = "Information og kommunikation")
+
+HusRegSimple26 <- lm(`Fritid, sport og kultur` ~ `DI`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple26, aes(x = `DI`, y = `Fritid, sport og kultur`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Fritid, sport og kultur vs. DI",
+       x = "DI",
+       y = "Fritid, sport og kultur")
+
+HusRegSimple27 <- lm(`Undervisning` ~ `DI`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple27, aes(x = `DI`, y = `Undervisning`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Undervisning vs. DI",
+       x = "DI",
+       y = "Undervisning")
+
+HusRegSimple28 <- lm(`Restauranter og hoteller` ~ `DI`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple28, aes(x = `DI`, y = `Restauranter og hoteller`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Restauranter og hoteller vs. DI",
+       x = "DI",
+       y = "Restauranter og hoteller")
+
+HusRegSimple29 <- lm(`Forsikring og finansielle tjenester` ~ `DI`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple29, aes(x = `DI`, y = `Forsikring og finansielle tjenester`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Forsikring og finansielle tjenester vs. DI",
+       x = "DI",
+       y = "Forsikring og finansielle tjenester")
+
+HusRegSimple30 <- lm(`Andre varer og tjenester` ~ `DI`, data = Hus_Forbrug3)
+
+ggplot(HusRegSimple30, aes(x = `DI`, y = `Andre varer og tjenester`)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Andre varer og tjenester vs. DI",
+       x = "DI",
+       y = "Andre varer og tjenester")
+
+HusRegSimple_summaries <- list()
+
+for (i in 1:30) {
+  HusRegSimple_modeller <- paste0("HusRegSimple", i)
+  HusRegSimple_summaries[[i]] <- summary(get(HusRegSimple_modeller))
+}
+
+# Navngiv listen for nem adgang
+names(HusRegSimple_summaries) <- paste0("HusRegSimple", 1:30)
