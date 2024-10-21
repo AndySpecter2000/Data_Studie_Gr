@@ -1,0 +1,191 @@
+#####################################
+########### OPGAVE 5 ################
+#####################################
+######################################## OPGAVE 5.1 ################################################
+# Indlæsning af pakker
+library(eurostat)
+library(dplyr)
+library(ggplot2)
+
+# Ser alle datakilder for Eustats
+alltabs <- get_eurostat_toc()
+
+# get table ikke-filtreret
+euforbrug <- get_eurostat_data("namq_10_gdp") # 
+metaforbrug <- get_eurostat_dsd("namq_10_gdp") #
+
+# Hent data for husholdningernes forbrugsudgift --> p31.
+eudata <- get_eurostat("namq_10_gdp", 
+                       filters = list(
+                         geo = c("DK", "BE", "NL", "SE", "AT", "DE", "FR", "IT", "ES"),
+                         na_item = "P31_S14",
+                         unit = "CLV15_MEUR",
+                         s_adj = "SCA"
+                       ),
+                       time_format = "date",
+                       cache = FALSE)
+
+# Clear eurostat caches
+eurostat::clean_eurostat_cache()
+
+# Fjern NA værdier under values
+eudata1 <- eudata[!is.na(eudata$values), ]
+
+#Konverter til data frame (eudata2 er udgangspunktet)
+eudata1 <- as.data.frame(eudata1) # main datasættet
+
+eudata1 <- eudata1[ , -c(1:4)]
+
+# Filtrer data mellem 1999 og 2024 direkte i eudata2
+Kvartal_start <- as.Date("1999-01-01")
+Kvartal_slut <- as.Date("2024-06-30")
+eudata2 <- eudata1[eudata1$time >= Kvartal_start & eudata1$time <= Kvartal_slut, ]
+
+# Funktion til at formatere kvartaler
+Formater_kvartaler <- function(date) {
+  year <- format(date, "%Y")
+  quarter <- as.integer(format(date, "%m")) %/% 4 + 1
+  paste0(year, "Q", quarter)
+}
+
+# Opret kolonne til kvartalsvis realvækst
+eudata2$Kvartalsvis_Realvækst <- NA
+
+# Loop gennem hvert unikt land
+for (land in unique(eudata2$geo)) {
+  land_data <- eudata2[eudata2$geo == land, ]
+  for (i in 5:nrow(land_data)) {
+    eudata2$Kvartalsvis_Realvækst[eudata2$geo == land][i] <- 
+      round((land_data$values[i] / land_data$values[i-4] - 1) * 100, 2)
+  }
+  eudata2 <- eudata2[-which(eudata2$geo == land)[1:4], ]
+}
+
+# Opret en liste til at gemme alle plots
+plot_list <- list()
+
+# Loop gennem hvert land og lav separate plots
+# Opret en liste til at gemme alle plots
+plot_list <- list()
+
+# Loop gennem hvert land og lav separate plots
+for (land in unique(eudata2$geo)) {
+  land_data <- eudata2[eudata2$geo == land, ]
+  
+  # Opret plot for hvert land
+  plot <- ggplot(land_data, aes(x = time, y = Kvartalsvis_Realvækst)) +
+    geom_line(size = 1, color = "blue") +
+    geom_vline(xintercept = as.Date("2020-01-01"), linetype = "dashed", color = "red") +
+    geom_vline(xintercept = as.Date("2022-06-30"), linetype = "dashed", color = "red") +
+    geom_vline(xintercept = as.Date("2023-01-01"), linetype = "solid", color = "black") +
+    labs(title = paste("Kvartalsvis Realvækst i Husholdningernes Forbrug:", land),
+         subtitle = "COVID-19 period markeret (Q1 2020 - Q2 2022)",
+         x = "Kvartal",
+         y = "Realvækst (%)") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_x_date(date_breaks = "1 year", date_labels = "%Y")
+  
+  # Gem plot i listen
+  plot_list[[land]] <- plot
+}
+
+# Vis alle plots i et grid layout
+library(gridExtra)
+do.call(grid.arrange, c(plot_list, ncol = 2))  # Juster ncol efter behov
+
+
+######################
+###   Opgave 5.2  ####
+######################
+
+# Findgennemsnittet af hvert land ved brug af aggregate
+gennemsnit_vækst <- aggregate(Kvartalsvis_Realvækst ~ geo, data = eudata2, FUN = mean, na.rm = TRUE)
+
+# Højeste gns. kvartalsvise årlige realvækst
+højeste_realvækst <- gennemsnit_vækst[which.max(gennemsnit_vækst$Kvartalsvis_Realvækst), ]
+
+# Plot af den gns. vækst for hvert land
+ggplot(gennemsnit_vækst, aes(x = geo, y = Kvartalsvis_Realvækst, fill = geo)) +
+  geom_col() +
+  theme_minimal() +
+  labs(title = "Sverige dominerer med højeste kvartalsvise realvækst i (2000-2024)",
+       x = "Land",
+       y = "Gennemsnitlig vækstrate (%)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none") +  # Fjern legend da landene allerede er angivet på x-aksen
+  geom_text(aes(label = sprintf("%.2f%%", Kvartalsvis_Realvækst)), 
+            vjust = -0.4, size = 3)
+
+##################################
+######### OPGAVE 5.3 # ###########
+##################################
+#vi opretter en nu et df (eucorona), og assigner den til vores main- datasæt.
+eucorona <- eudata2
+
+#Definer periode, så vi senere kan fjerne coronakrisen.
+covid_start <- as.Date("2020-01-01")
+covid_end <- as.Date("2023-01-01")
+
+# vi laver en filtrering, så coronakrisen udebliver ved at sige mindre eller større end coronakrisen
+eucorona <- eudata2[(eudata2$time <= covid_start) | (eudata2$time >= covid_end),]
+
+#vi finder nu den gennemsnitlige kvartalvise realvækst fra 2000Q1- 2024Q2 (uden coronakrisen):
+# Beregner gns. af den kvartalsvise realvækst for hvert land (uden COVID-19)
+gennemsnit_vækst_corona <- aggregate(Kvartalsvis_Realvækst ~ geo, data = eucorona, FUN = mean, na.rm = TRUE)
+
+# Plotter den gns. kvartalsvis realvækst uden COVID-19 perioden
+ggplot(gennemsnit_vækst_corona, aes(x = geo, y = Kvartalsvis_Realvækst, fill = geo)) +
+  geom_col(width = 0.7) +  # Gør søjlerne lidt smallere
+  theme_minimal() +
+  labs(title = "Gennemsnitlig kvartalsvis årlig realvækst uden COVID-19",
+       x = "Land",
+       y = "Gennemsnitlig vækstrate (%)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10),  # Størrelse på landekoder
+        legend.position = "none") +  # Fjern legend da fill=geo allerede vises på x-aksen
+  geom_text(aes(label = sprintf("%.2f%%", Kvartalsvis_Realvækst)),  # Formatér labels med 2 decimaler
+            vjust = -0.5, size = 3)  # Placer labels lidt over søjlerne
+
+#######################
+##### opgave  5.4  #####
+########################
+
+# Opgave 5.4: Analyser den gennemsnitlige kvartalsvise vækst i perioden 2020-2024
+
+# Filtrer data for perioden 2020 Q1 til 2024 Q2
+covideffekt_start <- as.Date("2020-01-01")
+covideffekt_end <- as.Date("2023-01-01")
+
+eucorona_effect <- eudata2[eudata2$time >= covideffekt_start & eudata2$time <= covideffekt_end, ]
+
+# Beregn gennemsnitlig vækst for hvert land under COVID-perioden
+gennemsnit_corona_period <- aggregate(Kvartalsvis_Realvækst ~ geo, 
+                                      data = eucorona_effect, 
+                                      FUN = mean, na.rm = TRUE)
+
+# Beregn gennemsnitlig vækst for hele perioden (som reference)
+gennemsnit_hele_perioden <- aggregate(Kvartalsvis_Realvækst ~ geo, 
+                                      data = eudata2, 
+                                      FUN = mean, na.rm = TRUE)
+
+# Beregn forskellen mellem vækstraterne under COVID og hele perioden
+gennemsnit_corona_period$fald_procent <- gennemsnit_corona_period$Kvartalsvis_Realvækst - 
+gennemsnit_hele_perioden$Kvartalsvis_Realvækst
+
+# Find det land, der har oplevet det største fald
+land_størst_fald <- gennemsnit_corona_period[which.min(gennemsnit_corona_period$fald_procent), ]
+
+# Udskriv resultatet
+cat("Landet med det største fald i gennemsnitlig kvartalsvis realvækst under COVID-19 er:\n")
+cat(land_størst_fald$geo, "med et fald på", round(land_størst_fald$fald_procent, 2), "procentpoint\n")
+
+# Visualiser resultatet
+ggplot(gennemsnit_corona_period, aes(x = reorder(geo, fald_procent), y = fald_procent, fill = geo)) +
+  geom_col() +
+  theme_minimal() +
+  labs(title = "corona isoleret set",
+       x = "Land",
+       y = "Ændring i vækstrate (procentpoint)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none") +
+  geom_text(aes(label = sprintf("%.2f", fald_procent)), vjust = ifelse(gennemsnit_corona_period$fald_procent < 0, 1.5, -0.5), size = 3) +
+  coord_flip()  # Vender plottet horisontalt for bedre læsbarhed
