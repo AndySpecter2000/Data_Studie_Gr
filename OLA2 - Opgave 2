@@ -1,1 +1,218 @@
-vzxv
+#################################################################################################
+###Opgave 2 - Forbrugertillidsindikatorer og fremtidig vækst i husholdningernes forbrugsudgift###
+#################################################################################################
+
+############################
+###FUNKTIONER TIL DST API###
+############################
+
+#dst_search() This function makes it possible to search through the different tables for a word or a phrase.
+#dst_tables() This function downloads all the possible tables available.
+#dst_meta() This function lets you download the meta data for a specific table, so you can see the description, unit, variables and values you can download data for.
+#dst_get_data() lets you download the actual data you wan't.
+
+#####################
+####Indlæs Pakker####
+#####################
+
+library(dkstat)
+library("tidyr")
+library("dplyr")
+library("ggplot2")
+library("corrplot")
+library("gridExtra")
+
+##############################
+####Forbrugerforventninger####
+##############################
+
+dst_search(string = "Forbrugerforventning", field = "text")
+
+Tabeller <- (dst_get_tables(lang = "da"))
+
+FORV <- dst_meta(table = "FORV1",lang = "da")
+
+FORV_filter <- list(INDIKATOR ="*",
+                 Tid = "*")
+
+FORV1 <- dst_get_data(table = "FORV1", query = FORV_filter, lang = "da")
+
+FORV1$TID <- as.factor(FORV1$TID)
+
+Forventning <- reshape(FORV1, idvar = "TID", timevar = "INDIKATOR", direction = "wide")
+
+colnames(Forventning) <- gsub("value.", "", colnames(Forventning))
+
+Forventning <- Forventning[-c(1:303),-1]
+
+rownames(Forventning) <- NULL
+
+Forventning$DST <- round(rowMeans(Forventning[c("Familiens økonomiske situation i dag, sammenlignet med for et år siden",
+                                                        "Familiens økonomiske  situation om et år, sammenlignet med i dag",
+                                                        "Danmarks økonomiske situation i dag, sammenlignet med for et år siden",
+                                                        "Danmarks økonomiske situation om et år, sammenlignet med i dag",
+                                                        "Anskaffelse af større forbrugsgoder, fordelagtigt for øjeblikket")]),1)
+
+Forventning$DI <- round(rowMeans(Forventning[c("Familiens økonomiske situation i dag, sammenlignet med for et år siden",
+                                                       "Danmarks økonomiske situation i dag, sammenlignet med for et år siden",
+                                                       "Anskaffelse af større forbrugsgoder, fordelagtigt for øjeblikket",
+                                                       "Anskaffelse af større forbrugsgoder, inden for de næste 12 mdr.")]),1)
+
+n_kategorier <- ncol(Forventning)
+n_rows <- nrow(Forventning)
+n_groups <- ceiling(n_rows / 3)
+Forventning_matrix <- matrix(nrow = n_groups, ncol = n_kategorier)
+colnames(Forventning_matrix) <- colnames(Forventning)
+
+for (var in seq_len(n_kategorier)) {
+  for (i in seq(1, n_rows, by = 3)) {
+    end <- min(i + 2, n_rows)  # Sørg for ikke at gå udenfor rækkerne
+    Forventning_matrix[ceiling(i / 3), var] <- round(mean(Forventning[i:end, var], na.rm = TRUE), 2)
+  }
+}
+
+Forventning <- as.data.frame(Forventning_matrix)
+
+Kvartal_start <- as.Date("2000-01-01")
+Kvartal_slut <- as.Date("2024-09-01")
+
+Kvartal_dato <- seq.Date(from = Kvartal_start, to = Kvartal_slut, by = "quarter")
+
+Formater_kvartaler <- function(date) {
+  year <- format(date, "%Y")
+  month <- as.integer(format(date, "%m")) 
+  quarter <- (month - 1) %/% 3 + 1
+  return(paste0(year, "Q", quarter))
+}
+
+Kvartaler <- sapply(Kvartal_dato, Formater_kvartaler)
+
+Forventning$Kvartal <- Kvartaler
+
+Forbrugertillid <- Forventning[-99,c(14:15)]
+
+#####################
+####Privatforbrug####
+#####################
+
+FORB <- dst_meta(table = "NKHC1",lang = "da")
+
+FORB_filter <- list(FORBRUGSART = "Privatforbrug",
+                    PRISENHED = "2020-priser, kædede værdier",
+                    SÆSON = "Sæsonkorrigeret",
+                    Tid = "*")
+
+Forbrug <- dst_get_data(table = "NKHC1", query = FORB_filter, lang = "da")
+
+Forbrug <- Forbrug[-c(1:4),-c(1:3)]
+
+rownames(Forbrug) <- NULL
+
+Kategori_Forbrug <- c("Kvartal","Forbrug")
+
+colnames(Forbrug) <- Kategori_Forbrug
+
+Forbrug$Realvaekst <- round(c(rep(0, 4), 
+                                      (Forbrug$Forbrug[5:length(Forbrug$Forbrug)] / 
+                                         Forbrug$Forbrug[1:(length(Forbrug$Forbrug) - 4)] - 1) * 100), 2)
+
+Forbrug <- Forbrug[-c(1:36),-2]
+
+rownames(Forbrug) <- NULL
+
+#####################################
+####Privatforbrug & Forventninger####
+#####################################
+
+Forbrug_endelig <- cbind(Forbrug, Forbrugertillid)
+
+ggplot(Forbrug_endelig, aes(x = Kvartal)) +
+  geom_bar(aes(y = Realvaekst, fill = "Realvaekst"), stat = "identity", position = "dodge") +  # Søjler for Realvaekst
+  geom_line(aes(y = DST, color = "DST"), size = 1) +          # Plot DST som linje
+  geom_line(aes(y = DI, color = "DI"), size = 1) +            # Plot DI som linje
+  scale_y_continuous(
+    name = "Forbrugertillidsindikator (Nettotal)",                  # Label for venstre y-akse
+    breaks = seq(-60, 60, by = 10),                 # Definerer værdier på venstre y-akse med intervaller på 10
+    sec.axis = sec_axis(~ ., breaks = seq(-60, 60, by = 10), name = "Realvækst (pct.)")  # Label for højre y-akse med samme breaks
+  ) +
+  scale_x_date(
+    date_breaks = "1 year",    # Angiver, at der skal være en tick for hvert år
+    date_labels = "%Y"         # Viser kun årstal
+  ) +
+  scale_fill_manual(values = c("Realvaekst" = "red")) +  # Definerer farven for Realvaekst
+  scale_color_manual(values = c("DST" = "blue", "DI" = "green")) +  # Farve til linjer
+  labs(
+    title = "DI FTI følger tættere realvæksten end DST FTI",  # Tilføjer en overskrift
+    x = "Kvartal", 
+    fill = "",    # Legende titel for fill (Realvaekst)
+    color = "Forbrugertillidsindikator"  # Legende titel for linjer
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.y.right = element_text(color = "black"),  # Tilpas højre y-akse titel
+    legend.position = "bottom"  # Flytter legenden til bunden
+  )
+
+##########################
+####Korrelationsmatrix####
+##########################
+
+Forbrug_corr <- Forbrug_endelig[,-1]
+
+Forbrug_corr <- cor(Forbrug_corr)
+
+corrplot(Forbrug_corr, method = "number",
+         tl.cex = 0.8,               
+         col = "black",              
+         addgrid.col = "black",      
+         is.corr = TRUE)              
+
+##########################
+####Lineære regression####
+##########################
+
+#1) Realvaekst vs DST
+ForbrugRegSimple <- lm(Realvaekst ~ `DST`, data = Forbrug_endelig)
+
+ggplot(ForbrugRegSimple, aes(x = `DST`, y = Realvaekst)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Realvaekst vs. DST",
+       x = "DST",
+       y = "Realvaekst")
+
+#2) Realvaekst vs DI
+ForbrugRegSimple2 <- lm(Realvaekst ~ `DI`, data = Forbrug_endelig)
+
+ggplot(ForbrugRegSimple2, aes(x = `DI`, y = Realvaekst)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Realvaekst vs. DI",
+       x = "DI",
+       y = "Realvaekst")
+
+##############################
+####Forudsigelse af 2024Q3####
+##############################
+
+# Formel for at beregne/forudse y (afhængig variabel) y =𝐵0 +𝐵1⋅𝑋1
+# I vores tilfælde er y realvæksten.Lad et summary af den lineære regression for at finde de nødvendige værdier
+#𝐵0 er estimated Intercept af y variablen i summary - Teoretisk betyder det Skæringspunktet (intercept), som er værdien af y når X1 er 0.
+#𝐵1 er estimated af den uafhængige variabel (x) Teoretisk betyder det hældningen (slope), som angiver, hvordan y ændrer sig med en ændring i X1
+#𝑋1 Den uafhængige variabel, som påvirker y. I denne opgave er X1 (den uafhængige variabel) DI og DST forbrugertillidsindikator
+
+## Forudsigelse af realvæksten for 3. kvartal 2024
+
+# DST (manuel beregning): y = B0 + B1 * X1 eller 0.1934 = 1.353 + 0.177 * (-6.53)
+DST_2024Q3 <- 1.35387+0.17770*(-6.53)
+
+# Med predict()
+FTI2024Q3_DST <- data.frame(DST = -6.53)
+Predict_DST <- predict(ForbrugRegSimple, newdata = FTI2024Q3_DST)
+
+# DI manuel beregning): y = B0 + B1 * X1 eller 0.7199 = 2.197 + 0.180 * (-8.17) 
+DI_2024Q3 <- 2.19704+0.18080*(-8.17)
+
+# Med predict()
+FTI2024Q3_DI <- data.frame(DI = -8.17)
+Predict_DI <- predict(ForbrugRegSimple2, newdata = FTI2024Q3_DI)
