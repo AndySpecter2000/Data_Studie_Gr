@@ -1,1 +1,131 @@
-hfhfdh
+#################
+### Opg. 1.1 ####
+#################
+require(dkstat)
+library(dkstat)
+
+######################################### Data indhentning #############################################
+# cheatcode: hent alle tabeller, og søg under filtre. Sammenhold dette med varaibler fra Statisikbanken
+Alle_lister <- dst_get_tables(lang = "da")
+
+#Vi går med datasættet "BY3", da det indeholder de nødvendige variabler for at besvare opgaven.
+
+#Hent metadata for BY1 tabellen
+by_meta <- dst_meta(table = "BY1", lang = "da")
+
+#Se variablerne i tabellen for at forstå filtreringsmuligheder
+print(by_meta$variables)
+
+######################################## filtering #######################################################
+# Opret en liste med filtre for at hente data (opgaven beder alene om antal indbyggere & bynavn)
+by_meta_filters <- list(
+  BYER = "*",  # Alle kommuner
+  Tid = "2024" # var obligatorisk (Ellers kom error daddy)
+)
+
+# Hent data med de angivne filtre
+by_data <- dst_get_data(table = "BY1", query = by_meta_filters, lang = "da")
+
+
+#################
+### Opg. 1.2 ####
+#################
+################################# Data rensning  #################################################
+
+library(dplyr)
+unique(by_data$value) # Hele Landet og Region hovedstaden dukker op som unik.
+
+############################# fjerne tekst foran kommunenavnene  ############################################
+
+# Brug sub() til at fjerne alt før selve kommunenavnet
+by_data$BYER <- sub("^[0-9]+\\-?[0-9]*\\s*", "", by_data$BYER)
+
+# Tjek resultatet
+head(by_data$BYER)
+
+############################# fjerne alle rækker, hvor "kommune" indgår i BYER ##########################
+
+# Filtrer rækkerne, hvor ordet "kommune" ikke indgår i BYER-kolonnen
+# Filtrer rækkerne, hvor ingen af de uønskede udtryk indgår
+by_dataframe_filtered <- by_data[!grepl("(del af Hovedstadsområdet)|(del af flere kommuner)|Hovedstadsområdet|Uden fast bopæl",
+                                              by_data$BYER, 
+                                              ignore.case = TRUE), ]
+
+# Fjern "Kommune" fra bynavne, undtagen for København
+by_dataframe_filtered$BYER <- ifelse(by_dataframe_filtered$BYER == "Københavns Kommune",
+                                     "København",
+                                     sub(" Kommune$", "", by_dataframe_filtered$BYER))
+
+################################# Kategorivariabel####################################################
+
+# Tjek først, om kolonnen "value" er numerisk
+str(by_dataframe_filtered$value)
+
+#konverter til numerisk
+by_dataframe_filtered$value <- as.numeric(by_dataframe_filtered$value)
+
+
+# Definér dine grænser og labels
+bycat_limits <- c(0, 250, 1000, 2500, 10000, 50000, Inf) # Grænser for kategorierne
+bycat_labels <- c("landet", "landsby", "lille by", "almindelig by", "større by", "storby") # Labels for kategorierne
+
+# Brug findInterval() til at klassificere byerne baseret på indbyggertal
+by_dataframe_filtered$bycat <- bycat_labels[findInterval(by_dataframe_filtered$value, bycat_limits)]
+
+###########################################################################################################
+
+#################
+### Opg. 1.3 ####
+#################
+
+
+bolig_data <- read.csv("../data/boligsiden.csv")
+
+# Rens bolig_data
+names(bolig_data)[names(bolig_data) == "by"] <- "by"  # Sikrer at kolonnen hedder 'by' til sammenlægning
+bolig_data$by <- tolower(bolig_data$by)  # Konverterer bynavne til små bogstaver for konsistens
+
+# Rens by_dataframe_filtered fra din tidligere kode
+by_dataframe_cleaned <- by_dataframe_filtered
+names(by_dataframe_cleaned)[names(by_dataframe_cleaned) == "BYER"] <- "by"  # Omdøber BYER til 'by' for sammenlægning
+by_dataframe_cleaned$by <- tolower(by_dataframe_cleaned$by)  # Konverterer bynavne til små bogstaver
+by_dataframe_cleaned <- by_dataframe_cleaned[, c("by", "bycat")]  # Vælger kun de kolonner, vi har brug for til sammenlægning
+
+# Sammenlæg datasættene og behold kun matchede rækker
+merged_data <- merge(bolig_data, by_dataframe_cleaned, by = "by", all = FALSE)
+
+# Vælg kun de ønskede kolonner
+final_data <- merged_data[, c("by", "pris", "kvmpris", "bycat")]
+
+# Fjern resterende NA'er værdier
+final_data <- final_data[complete.cases(final_data), ]
+
+# Indlæs ggplot2 biblioteket
+library(ggplot2)
+
+# Beregn gennemsnitlig kvadratmeterpris for hver bytype med base R
+avg_kvmpris <- aggregate(kvmpris ~ bycat, data = final_data, FUN = mean)
+
+# Omdøb 'bycat' værdier for at matche billedet og sørg for korrekt rækkefølge
+avg_kvmpris$bycat <- factor(avg_kvmpris$bycat,
+                            levels = c("almindelig by", "landet", "landsby", "lille by", "storby", "større by"))
+
+# Definer farvepalette
+farver <- c("almindelig by" = "#e67d72", "landet" = "#b39f33", "landsby" = "#56b64c", 
+            "lille by" = "#58bcc2", "storby" = "#6e9df8", "større by" = "#e270dd")
+
+# Lav plottet med ggplot2
+ggplot(avg_kvmpris, aes(x = bycat, y = kvmpris, fill = bycat)) +
+  geom_col() +
+  scale_fill_manual(values = farver) +
+  labs(x = "bykat", y = "kvmpris", fill = "Bytype") +
+  scale_y_continuous(limits = c(0, 30), breaks = seq(0, 30, by = 10)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major.x = element_blank(),
+        legend.position = "right")
+
+# Vis plottet
+print(last_plot())
+
+
